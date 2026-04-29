@@ -14,41 +14,21 @@ This project explores **endpoint-aware + hierarchical point-lane graph** archite
 
 ```
 topo_map/
-├── README.md
-├── requirements.txt
-├── setup.py
-├── configs/
-│   ├── default_config.py          # Default hyperparameters
-│   └── experiments/
-│       ├── exp_1_baseline.yaml    # TopoNet baseline
-│       ├── exp_2_endpoint.yaml    # + Endpoint detection
-│       ├── exp_3_point_lane.yaml  # + Point-lane graph
-│       └── exp_4_full.yaml        # Complete model
-├── dataset/
-│   ├── __init__.py
-│   ├── openlane_v2.py             # OpenLane-V2 dataset loader
-│   └── preprocessing.py           # Data preprocessing tools
-├── model/
-│   ├── __init__.py
-│   ├── bever_encoder.py           # BEV feature extraction
-│   ├── endpoint_detector.py       # Endpoint detection module
-│   ├── point_lane_graph.py        # Hierarchical point-lane graph
-│   ├── topology_head.py           # Topology prediction heads
-│   └── toponet_endpoint.py        # Complete model
-├── loss/
-│   ├── __init__.py
-│   └── topo_loss.py               # Combined loss function
-├── evaluation/
-│   ├── __init__.py
-│   └── openlane_v2_eval.py        # Official OLS/TOP metrics
-├── scripts/
-│   ├── train.py                   # Main training script
-│   ├── eval.py                    # Evaluation script
-│   └── preprocess_data.py         # Data preprocessing runner
-└── docs/
-    ├── architecture.md            # Detailed architecture docs
-    ├── experiments.md             # Experiment design details
-    └── quickstart.md              # Quick start guide
+├── configs/                 # Experiment configurations
+│   ├── default_config.py    # Default hyperparameters
+│   └── experiments/         # Ablation experiment configs
+├── dataset/                 # OpenLane-V2 data loader
+├── model/                   # Model architecture
+│   ├── toponet_endpoint.py  # Complete model
+│   ├── endpoint_detector.py # Endpoint detection (core innovation)
+│   ├── point_lane_graph.py  # Hierarchical graph (core innovation)
+│   └── ...
+├── loss/                    # Combined loss functions
+├── evaluation/              # OLS/TOP metrics
+├── scripts/                 # Training & evaluation scripts
+├── tests/                   # Unit tests (1000+ lines)
+├── docs/                    # Architecture & experiment docs
+└── CHANGELOG.md             # Version history
 ```
 
 ## 🚀 Quick Start
@@ -60,6 +40,9 @@ topo_map/
 conda create -n topo_map python=3.9
 conda activate topo_map
 
+# Install PyTorch (CUDA 11.8)
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+
 # Install dependencies
 pip install -r requirements.txt
 
@@ -67,37 +50,72 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-### 2. Data Preparation
+### 2. Verify Installation
 
 ```bash
-# Download OpenLane-V2 subset_A from official source
-# https://github.com/OpenDriveLab/OpenLane-V2
+# Run quick sanity check (no GPU required for this)
+./quick_sanity_check.sh
+
+# Or run all unit tests
+./run_tests.sh
+```
+
+Expected output (without PyTorch):
+```
+NOTE: Install PyTorch first...
+```
+
+With PyTorch installed:
+```
+==========================================
+TopoMap Training Sanity Check
+==========================================
+[1/5] Testing imports... All imports successful!
+[2/5] Testing model creation... Model created with XXX parameters
+[3/5] Testing forward pass... Forward pass successful!
+[4/5] Testing loss computation... Loss computation successful!
+[5/5] Testing backward pass... Backward pass successful!
+==========================================
+All sanity checks passed!
+```
+
+### 3. Data Preparation
+
+```bash
+# Download OpenLane-V2 from https://github.com/OpenDriveLab/OpenLane-V2
+# subset_A (~151GB) recommended
 
 # Preprocess data
 python scripts/preprocess_data.py \
     --root /path/to/openlane_v2/subset_A \
     --output /path/to/preprocessed \
-    --split train
+    --split all
 ```
 
-### 3. Training
+### 4. Training
 
 ```bash
-# Baseline (TopoNet-style)
+# Update configs/experiments/exp_4_full.yaml with your data path:
+# data:
+#   data_root: /path/to/preprocessed
+
+# Train baseline first (faster, ~2 hours)
 python scripts/train.py --config configs/experiments/exp_1_baseline.yaml
 
-# With endpoint detection
-python scripts/train.py --config configs/experiments/exp_2_endpoint.yaml
-
-# Full model (endpoint + point-lane graph)
+# Train full model (~6-8 hours on A100)
 python scripts/train.py --config configs/experiments/exp_4_full.yaml
+
+# Resume from checkpoint
+python scripts/train.py \
+    --config configs/experiments/exp_4_full.yaml \
+    --resume outputs/exp_4_full_*/checkpoint_epoch_10.pth
 ```
 
-### 4. Evaluation
+### 5. Evaluation
 
 ```bash
 python scripts/eval.py \
-    --checkpoint /path/to/checkpoint.pth \
+    --checkpoint outputs/exp_4_full_*/best_model.pth \
     --data /path/to/preprocessed \
     --split val
 ```
@@ -110,6 +128,22 @@ python scripts/eval.py \
 | Exp-2 | + Endpoint Detection | ~43.0 |
 | Exp-3 | + Point-Lane Graph | ~45.0 |
 | Exp-4 | Full Model | ~46.5+ |
+
+## 🧪 Testing
+
+```bash
+# Run all unit tests
+python -m pytest tests/ -v
+
+# Or use the provided script
+./run_tests.sh
+
+# Expected output:
+# test_dataset.py::TestOpenLaneV2Dataset::test_dataset_loads PASSED
+# test_model.py::TestEndpointDetector::test_output_shapes PASSED
+# test_integration.py::TestEndToEndForward::test_full_forward_shapes PASSED
+# ...
+```
 
 ## 🔬 Architecture Overview
 
@@ -161,6 +195,8 @@ model:
   num_points: 32              # Points sampled per lane
   bev_h: 100                  # BEV grid height
   bev_w: 200                  # BEV grid width
+  use_endpoint_detector: true # Enable endpoint detection
+  use_point_lane_graph: true  # Enable hierarchical graph
 
 training:
   batch_size: 4
