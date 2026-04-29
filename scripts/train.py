@@ -4,6 +4,13 @@ Main Training Script for TopoMap
 
 Usage:
     python scripts/train.py --config configs/experiments/exp_4_full.yaml
+    
+Options:
+    --config     : Path to experiment config file
+    --resume     : Path to checkpoint to resume from
+    --amp        : Enable automatic mixed precision (AMP)
+    --compile    : Enable torch.compile() for faster training (PyTorch 2.0+)
+    --debug      : Enable debug mode
 """
 
 import argparse
@@ -13,9 +20,11 @@ from pathlib import Path
 from datetime import datetime
 
 import torch
+import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+from torch.amp import autocast, GradScaler
 import yaml
 
 # Add project root to path
@@ -31,6 +40,10 @@ def parse_args():
                         help='Path to config file')
     parser.add_argument('--resume', type=str, default=None,
                         help='Path to checkpoint to resume from')
+    parser.add_argument('--amp', action='store_true',
+                        help='Enable automatic mixed precision training')
+    parser.add_argument('--compile', action='store_true',
+                        help='Enable torch.compile() for faster training')
     parser.add_argument('--debug', action='store_true',
                         help='Enable debug mode')
     return parser.parse_args()
@@ -43,9 +56,15 @@ def load_config(config_path: str) -> dict:
     return config
 
 
-def build_model(config: dict) -> EndpointAwareTopologyNet:
+def build_model(config: dict, use_compile: bool = False) -> nn.Module:
     """Build model from config"""
     model = EndpointAwareTopologyNet(config.get('model', {}))
+    
+    # Apply torch.compile if requested (PyTorch 2.0+)
+    if use_compile and hasattr(torch, 'compile'):
+        print("Compiling model with torch.compile()...")
+        model = torch.compile(model)
+    
     return model
 
 
@@ -70,7 +89,7 @@ def build_dataloader(config: dict, split: str = 'train') -> DataLoader:
 
 
 def train_one_epoch(
-    model: torch.nn.Module,
+    model: nn.Module,
     dataloader: DataLoader,
     optimizer: optim.Optimizer,
     loss_fn: TopologyLoss,
@@ -78,9 +97,13 @@ def train_one_epoch(
     epoch: int,
     log_interval: int = 50,
     writer: SummaryWriter = None,
+    use_amp: bool = False,
 ) -> float:
     """
     Train for one epoch
+    
+    Args:
+        use_amp: Enable automatic mixed precision
     
     Returns:
         Average loss for the epoch
@@ -89,9 +112,10 @@ def train_one_epoch(
     total_loss = 0.0
     total_batches = 0
     
+    # AMP gradient scaler
+    scaler = GradScaler() if use_amp else None
+    
     for batch_idx, samples in enumerate(dataloader):
-        # Process each sample in batch (simplified batching)
-        # In production, would use proper batch collation
         batch_losses = []
         
         for sample in samples:
@@ -103,37 +127,49 @@ def train_one_epoch(
                 images = [img.to(device) for img in images]
             
             camera_params = {
-                'intrinsics': sample.get('camera_intrinsics', torch.eye(3)).to(device),
-                'extrinsics': sample.get('camera_extrinsics', torch.eye(4)).to(device),
+                'intrinsics': sample.get('camera_intrinsics', torch.eye(3, device=device),
+                                        dtype=torch.float32),
+                'extrinsics': sample.get('camera_extrinsics', torch.eye(4, device=device),
+                                        dtype=torch.float32),
             }
             
-            # Forward
-            predictions = model(images, **camera_params, return_aux=True)
-            
-            # Build target dict
-            targets = build_targets_from_sample(sample)
-            targets = {k: v.to(device) if isinstance(v, torch.Tensor) else v 
-                      for k, v in targets.items()}
-            
-            # Compute loss
-            losses, loss = loss_fn(predictions, targets)
-            batch_losses.append(loss)
+            # Forward with optional mixed precision
+            if use_amp:
+                with autocast(device_type='cuda'):
+                    predictions = model(images, **camera_params, return_aux=True)
+                    targets = build_targets_from_sample(sample)
+                    targets = {k: v.to(device) if isinstance(v, torch.Tensor) else v 
+                              for k, v in targets.items()}
+                    losses, loss = loss_fn(predictions, targets)
+                batch_losses.append(loss)
+                
+                # Backward with gradient scaling
+                optimizer.zero_grad()
+                scaler.scale(loss).backward()
+                
+                # Unscale and clip gradients
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                
+                # Optimizer step with scaler update
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                predictions = model(images, **camera_params, return_aux=True)
+                targets = build_targets_from_sample(sample)
+                targets = {k: v.to(device) if isinstance(v, torch.Tensor) else v 
+                          for k, v in targets.items()}
+                losses, loss = loss_fn(predictions, targets)
+                batch_losses.append(loss)
+                
+                # Standard backward
+                optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
         
         # Average loss over batch
         batch_loss = torch.stack(batch_losses).mean()
-        
-        # Backward
-        optimizer.zero_grad()
-        batch_loss.backward()
-        
-        # Gradient clipping
-        torch.nn.utils.clip_grad_norm_(
-            model.parameters(), 
-            max_norm=1.0
-        )
-        
-        optimizer.step()
-        
         total_loss += batch_loss.item()
         total_batches += 1
         
@@ -195,7 +231,7 @@ def build_targets_from_sample(sample: dict) -> dict:
 
 
 def validate(
-    model: torch.nn.Module,
+    model: nn.Module,
     dataloader: DataLoader,
     loss_fn: TopologyLoss,
     device: torch.device,
@@ -217,8 +253,10 @@ def validate(
                     images = [img.to(device) for img in images]
                 
                 camera_params = {
-                    'intrinsics': sample.get('camera_intrinsics', torch.eye(3)).to(device),
-                    'extrinsics': sample.get('camera_extrinsics', torch.eye(4)).to(device),
+                    'intrinsics': sample.get('camera_intrinsics', torch.eye(3, device=device),
+                                            dtype=torch.float32),
+                    'extrinsics': sample.get('camera_extrinsics', torch.eye(4, device=device),
+                                            dtype=torch.float32),
                 }
                 
                 predictions = model(images, **camera_params, return_aux=False)
@@ -247,6 +285,8 @@ def main():
     # Setup device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
+    print(f"AMP enabled: {args.amp}")
+    print(f"torch.compile enabled: {args.compile}")
     
     # Setup output directory
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -260,7 +300,7 @@ def main():
     writer = SummaryWriter(log_dir=str(output_dir / 'logs'))
     
     # Build model
-    model = build_model(config)
+    model = build_model(config, use_compile=args.compile)
     model = model.to(device)
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     
@@ -311,6 +351,7 @@ def main():
             model, train_loader, optimizer, loss_fn, device, epoch,
             log_interval=config.get('logging', {}).get('log_interval', 50),
             writer=writer,
+            use_amp=args.amp,
         )
         
         print(f"Train Loss: {train_loss:.4f}")

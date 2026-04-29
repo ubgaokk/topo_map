@@ -31,6 +31,10 @@ data:
   data_root: /path/to/openlane_v2/subset_A
   num_workers: 4
 
+# Performance options (enable for faster training)
+# use_amp: true      # Enable automatic mixed precision
+# use_compile: true  # Enable torch.compile() (PyTorch 2.0+)
+
 logging:
   project_name: topo_map
   experiment_name: exp_4_full
