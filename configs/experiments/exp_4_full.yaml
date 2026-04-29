@@ -1,0 +1,36 @@
+# Experiment 4: Full Model (Endpoint + Point-Lane Graph)
+# Complete model with all innovations enabled
+
+model:
+  dim: 256
+  num_lane_queries: 200
+  num_te_queries: 100
+  num_points: 32
+  bev_h: 100
+  bev_w: 200
+  num_decoder_layers: 6
+  num_heads: 8
+  
+  # All innovations enabled
+  use_endpoint_detector: true
+  use_point_lane_graph: true
+  endpoint_hidden_dim: 128
+  gnn_layers: 3
+  adjacency_threshold: 5.0
+  edge_types: 3
+
+training:
+  batch_size: 4
+  lr: 2.0e-4
+  epochs: 30
+  lambda_detection: 1.0
+  lambda_topology: 1.0
+  lambda_endpoint: 0.5
+
+data:
+  data_root: /path/to/openlane_v2/subset_A
+  num_workers: 4
+
+logging:
+  project_name: topo_map
+  experiment_name: exp_4_full

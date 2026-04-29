@@ -1,0 +1,33 @@
+# Experiment 2: Add Endpoint Detection
+# Tests the impact of endpoint detection module alone
+
+model:
+  dim: 256
+  num_lane_queries: 200
+  num_te_queries: 100
+  num_points: 32
+  bev_h: 100
+  bev_w: 200
+  num_decoder_layers: 6
+  num_heads: 8
+  
+  # Enable endpoint detection
+  use_endpoint_detector: true
+  use_point_lane_graph: false   # Disabled for ablation
+  endpoint_hidden_dim: 128
+
+training:
+  batch_size: 4
+  lr: 2.0e-4
+  epochs: 30
+  lambda_detection: 1.0
+  lambda_topology: 1.0
+  lambda_endpoint: 0.5   # Enable endpoint loss
+
+data:
+  data_root: /path/to/openlane_v2/subset_A
+  num_workers: 4
+
+logging:
+  project_name: topo_map
+  experiment_name: exp_2_endpoint
